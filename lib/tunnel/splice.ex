@@ -41,7 +41,7 @@ defmodule Tunnel.Splice do
 
   defp ready!(socket) do
     {:ok, [active: false]} = :inet.getopts(socket, [:active])
-    {:ok, {_ip, _port}}    = :inet.peername(socket)
+    {:ok, {_ip, _port}} = :inet.peername(socket)
     :ok
   end
 end

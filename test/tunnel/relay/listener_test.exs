@@ -1,6 +1,5 @@
 defmodule Tunnel.Relay.ListenerTest do
   use ExUnit.Case, async: true
-  import ExUnit.CaptureLog
 
   test "accepts a connection" do
     pid = start_supervised!({ThousandIsland, port: 0, handler_module: Tunnel.Relay.Handler})
