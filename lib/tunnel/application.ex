@@ -2,7 +2,7 @@ defmodule Tunnel.Application do
   use Application
   require Logger
 
-  @role        Application.compile_env!(:tunnel, [Tunnel, :role])
+  @role Application.compile_env!(:tunnel, [Tunnel, :role])
   @listen_port Application.compile_env!(:tunnel, [Tunnel, :listen_port])
 
   @impl true
@@ -19,5 +19,5 @@ defmodule Tunnel.Application do
   end
 
   defp role_children(:agent), do: []
-  defp role_children(:none),  do: []
+  defp role_children(:none), do: []
 end
