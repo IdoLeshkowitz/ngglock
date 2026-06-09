@@ -24,3 +24,6 @@ tunnel-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# ElixirLS build artifacts.
+/.elixir_ls/
