@@ -1,28 +1,27 @@
 defmodule Tunnel.Splice do
   use GenServer
 
-  def start_link(sock_a, sock_b) do
-    :ok = ready!(sock_a)
-    :ok = ready!(sock_b)
-
-    with {:ok, pid} <- GenServer.start_link(__MODULE__, %{a: sock_a, b: sock_b}),
-         :ok <- :gen_tcp.controlling_process(sock_a, pid),
-         :ok <- :gen_tcp.controlling_process(sock_b, pid) do
-      send(pid, :arm)
-      {:ok, pid}
-    end
+  def child_spec(_opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [[]]}, restart: :temporary}
   end
 
-  @impl true
-  def init(state), do: {:ok, state}
+  def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, %{})
+
+  def splice(pid, sock_a, sock_b), do: GenServer.cast(pid, {:splice, sock_a, sock_b})
 
   @impl true
-  def handle_info(:arm, %{a: a, b: b} = state) do
+  def init(_), do: {:ok, %{}}
+
+  @impl true
+  def handle_cast({:splice, a, b}, _state) do
+    :ok = ready!(a)
+    :ok = ready!(b)
     :ok = :inet.setopts(a, active: :once)
     :ok = :inet.setopts(b, active: :once)
-    {:noreply, state}
+    {:noreply, %{a: a, b: b}}
   end
 
+  @impl true
   def handle_info({:tcp, sock, data}, state) do
     peer = if sock == state.a, do: state.b, else: state.a
 
