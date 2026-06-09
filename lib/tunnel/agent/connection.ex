@@ -11,10 +11,17 @@ defmodule Tunnel.Agent.Connection do
 
   @impl true
   def init(opts) do
+    opts =
+      Keyword.validate!(opts,
+        relay_host: String.to_charlist(@relay_host),
+        tunnel_port: @tunnel_port,
+        local_app_port: @local_app_port
+      )
+
     state = %{
-      relay_host: opts[:relay_host] || String.to_charlist(@relay_host),
-      tunnel_port: opts[:tunnel_port] || @tunnel_port,
-      local_app_port: opts[:local_app_port] || @local_app_port,
+      relay_host: Keyword.fetch!(opts, :relay_host),
+      tunnel_port: Keyword.fetch!(opts, :tunnel_port),
+      local_app_port: Keyword.fetch!(opts, :local_app_port),
       backoff: 500,
       ref: nil
     }
