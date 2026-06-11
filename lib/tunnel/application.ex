@@ -17,7 +17,6 @@ defmodule Tunnel.Application do
 
   defp role_children(:relay) do
     Logger.info("relay tunnel_port=#{@tunnel_port} public_port=#{@public_port}")
-
     [
       Tunnel.Relay.Tunnels,
       {Tunnel.Relay.Acceptor, {:tunnel_listener, @tunnel_port, &Tunnel.Relay.handle_tunnel/1}},

@@ -1,5 +1,43 @@
 defmodule Tunnel.EndToEndTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  setup do
+    n = System.unique_integer([:positive])
+    splice_sup = :"splice_sup_e2e_#{n}"
+    tunnels = :"tunnels_e2e_#{n}"
+
+    start_supervised!({Tunnel.SpliceSupervisor, name: splice_sup})
+    start_supervised!({Tunnel.Relay.Tunnels, name: tunnels})
+
+    tunnel_acc =
+      start_supervised!(
+        {Tunnel.Relay.Acceptor,
+         {:"tunnel_e2e_#{n}", 0, fn sock -> Tunnel.Relay.handle_tunnel(tunnels, sock) end}}
+      )
+
+    public_acc =
+      start_supervised!(
+        {Tunnel.Relay.Acceptor,
+         {:"public_e2e_#{n}", 0,
+          fn sock -> Tunnel.Relay.handle_public(tunnels, splice_sup, sock) end}}
+      )
+
+    tunnel_port = Tunnel.Relay.Acceptor.port(tunnel_acc)
+    public_port = Tunnel.Relay.Acceptor.port(public_acc)
+
+    {app_port, app_listen} = start_local_app()
+    on_exit(fn -> :gen_tcp.close(app_listen) end)
+
+    start_supervised!(
+      {Tunnel.Agent.Connection,
+       relay_host: ~c"localhost",
+       tunnel_port: tunnel_port,
+       local_app_port: app_port,
+       splice_supervisor: splice_sup}
+    )
+
+    %{tunnels: tunnels, public_port: public_port}
+  end
 
   defp start_local_app do
     {:ok, l} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
@@ -29,18 +67,18 @@ defmodule Tunnel.EndToEndTest do
     end
   end
 
-  defp wait_for_parked(timeout \\ 2000) do
+  defp wait_for_parked(tunnels, timeout \\ 2000) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_parked(deadline)
+    do_wait_parked(tunnels, deadline)
   end
 
-  defp do_wait_parked(deadline) do
-    q = :sys.get_state(Tunnel.Relay.Tunnels)
+  defp do_wait_parked(tunnels, deadline) do
+    q = :sys.get_state(tunnels)
 
     if :queue.is_empty(q) do
       if System.monotonic_time(:millisecond) < deadline do
         Process.sleep(50)
-        do_wait_parked(deadline)
+        do_wait_parked(tunnels, deadline)
       else
         flunk("timed out waiting for agent to park a connection")
       end
@@ -49,33 +87,10 @@ defmodule Tunnel.EndToEndTest do
     end
   end
 
-  test "request is served end-to-end through the tunnel" do
-    {app_port, app_listen} = start_local_app()
+  test "request is served end-to-end through the tunnel", %{tunnels: tunnels, public_port: pp} do
+    :ok = wait_for_parked(tunnels)
 
-    start_supervised!(Tunnel.SpliceSupervisor)
-    start_supervised!(Tunnel.Relay.Tunnels)
-
-    tunnel_acceptor =
-      start_supervised!(
-        {Tunnel.Relay.Acceptor, {:e2e_tunnel_listener, 0, &Tunnel.Relay.handle_tunnel/1}}
-      )
-
-    public_acceptor =
-      start_supervised!(
-        {Tunnel.Relay.Acceptor, {:e2e_public_listener, 0, &Tunnel.Relay.handle_public/1}}
-      )
-
-    tunnel_port = Tunnel.Relay.Acceptor.port(tunnel_acceptor)
-    public_port = Tunnel.Relay.Acceptor.port(public_acceptor)
-
-    start_supervised!(
-      {Tunnel.Agent.Connection,
-       relay_host: ~c"localhost", tunnel_port: tunnel_port, local_app_port: app_port}
-    )
-
-    :ok = wait_for_parked()
-
-    {:ok, client} = :gen_tcp.connect(~c"localhost", public_port, [:binary, active: false])
+    {:ok, client} = :gen_tcp.connect(~c"localhost", pp, [:binary, active: false])
     :ok = :gen_tcp.send(client, "GET / HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
 
     response = recv_all(client, "")
@@ -84,7 +99,6 @@ defmodule Tunnel.EndToEndTest do
     assert response =~ "hello"
 
     :gen_tcp.close(client)
-    :gen_tcp.close(app_listen)
   end
 
   defp recv_all(sock, acc) do

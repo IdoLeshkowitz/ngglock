@@ -1,11 +1,18 @@
 defmodule Tunnel.Relay.Tunnels do
   use GenServer
 
-  def start_link(_opts \\ []),
-    do: GenServer.start_link(__MODULE__, :queue.new(), name: __MODULE__)
+  def child_spec(opts) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    %{id: name, start: {__MODULE__, :start_link, [opts]}}
+  end
 
-  def parked(socket), do: GenServer.cast(__MODULE__, {:parked, socket})
-  def checkout(target), do: GenServer.call(__MODULE__, {:checkout, target})
+  def start_link(opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, :queue.new(), name: name)
+  end
+
+  def parked(server \\ __MODULE__, socket), do: GenServer.cast(server, {:parked, socket})
+  def checkout(server \\ __MODULE__, target), do: GenServer.call(server, {:checkout, target})
 
   @impl true
   def init(q), do: {:ok, q}
@@ -19,7 +26,6 @@ defmodule Tunnel.Relay.Tunnels do
       {{:value, s}, q2} ->
         :ok = :gen_tcp.controlling_process(s, target)
         {:reply, s, q2}
-
       {:empty, q2} ->
         {:reply, nil, q2}
     end
