@@ -26,6 +26,7 @@ defmodule Tunnel.Relay.Tunnels do
       {{:value, s}, q2} ->
         :ok = :gen_tcp.controlling_process(s, target)
         {:reply, s, q2}
+
       {:empty, q2} ->
         {:reply, nil, q2}
     end

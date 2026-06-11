@@ -58,6 +58,7 @@ defmodule Tunnel.Agent.ConnectionTest do
       {:ok, sock} ->
         spawn(fn -> echo(sock) end)
         echo_loop(listen)
+
       _ ->
         :ok
     end
@@ -65,8 +66,12 @@ defmodule Tunnel.Agent.ConnectionTest do
 
   defp echo(sock) do
     case :gen_tcp.recv(sock, 0, 5000) do
-      {:ok, data} -> :gen_tcp.send(sock, data); echo(sock)
-      _ -> :gen_tcp.close(sock)
+      {:ok, data} ->
+        :gen_tcp.send(sock, data)
+        echo(sock)
+
+      _ ->
+        :gen_tcp.close(sock)
     end
   end
 
@@ -88,7 +93,12 @@ defmodule Tunnel.Agent.ConnectionTest do
     end
   end
 
-  test "connects and parks a tunnel socket on start", %{n: n, tunnels: tunnels, splice_sup: splice_sup, app_port: app_port} do
+  test "connects and parks a tunnel socket on start", %{
+    n: n,
+    tunnels: tunnels,
+    splice_sup: splice_sup,
+    app_port: app_port
+  } do
     tp = start_tunnel_acceptor(n, tunnels)
     start_connection(tp, app_port, splice_sup)
 
@@ -127,9 +137,11 @@ defmodule Tunnel.Agent.ConnectionTest do
 
     # Release the placeholder and immediately bind the real acceptor — no race window
     :gen_tcp.close(tmp)
+
     start_supervised!(
       {Tunnel.Relay.Acceptor,
-       {:"tunnel_retry_#{n}", future_port, fn sock -> Tunnel.Relay.handle_tunnel(tunnels, sock) end}}
+       {:"tunnel_retry_#{n}", future_port,
+        fn sock -> Tunnel.Relay.handle_tunnel(tunnels, sock) end}}
     )
 
     :ok = wait_for_parked(tunnels)
