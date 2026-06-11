@@ -10,10 +10,18 @@ defmodule Tunnel.SpliceTest do
     {client, server}
   end
 
+  defp start_splice(sock_a, sock_b) do
+    {:ok, sp} = Tunnel.Splice.start_link()
+    :ok = :gen_tcp.controlling_process(sock_a, sp)
+    :ok = :gen_tcp.controlling_process(sock_b, sp)
+    :ok = Tunnel.Splice.splice(sp, sock_a, sock_b)
+    {:ok, sp}
+  end
+
   test "forwards both directions" do
     {c1, s1} = pair()
     {c2, s2} = pair()
-    {:ok, _} = Tunnel.Splice.start_link(s1, s2)
+    {:ok, _} = start_splice(s1, s2)
 
     :ok = :gen_tcp.send(c1, "hello")
     assert {:ok, "hello"} = :gen_tcp.recv(c2, 5, 1000)
@@ -25,7 +33,7 @@ defmodule Tunnel.SpliceTest do
   test "closing one side closes the other and splice exits normal" do
     {c1, s1} = pair()
     {c2, s2} = pair()
-    {:ok, splice} = Tunnel.Splice.start_link(s1, s2)
+    {:ok, splice} = start_splice(s1, s2)
     ref = Process.monitor(splice)
 
     :ok = :gen_tcp.close(c1)
@@ -36,7 +44,7 @@ defmodule Tunnel.SpliceTest do
   test "large payload arrives intact" do
     {c1, s1} = pair()
     {c2, s2} = pair()
-    {:ok, _} = Tunnel.Splice.start_link(s1, s2)
+    {:ok, _} = start_splice(s1, s2)
 
     payload = :crypto.strong_rand_bytes(1_000_000)
     :ok = :gen_tcp.send(c1, payload)
@@ -50,9 +58,14 @@ defmodule Tunnel.SpliceTest do
     {c2, s2} = pair()
     :inet.setopts(s2, active: true)
 
-    assert_raise MatchError, fn ->
-      Tunnel.Splice.start_link(s1, s2)
-    end
+    # Use start (no link) so the crash doesn't kill the test process
+    {:ok, sp} = GenServer.start(Tunnel.Splice, %{})
+    ref = Process.monitor(sp)
+    :ok = :gen_tcp.controlling_process(s1, sp)
+    :ok = :gen_tcp.controlling_process(s2, sp)
+    :ok = Tunnel.Splice.splice(sp, s1, s2)
+
+    assert_receive {:DOWN, ^ref, :process, ^sp, _}, 1000
 
     :gen_tcp.close(c1)
     :gen_tcp.close(c2)
@@ -62,9 +75,12 @@ defmodule Tunnel.SpliceTest do
     {c1, s1} = pair()
     {:ok, unconnected} = :gen_tcp.listen(0, [:binary, active: false])
 
-    assert_raise MatchError, fn ->
-      Tunnel.Splice.start_link(s1, unconnected)
-    end
+    {:ok, sp} = GenServer.start(Tunnel.Splice, %{})
+    ref = Process.monitor(sp)
+    :ok = :gen_tcp.controlling_process(s1, sp)
+    :ok = Tunnel.Splice.splice(sp, s1, unconnected)
+
+    assert_receive {:DOWN, ^ref, :process, ^sp, _}, 1000
 
     :gen_tcp.close(c1)
     :gen_tcp.close(unconnected)
