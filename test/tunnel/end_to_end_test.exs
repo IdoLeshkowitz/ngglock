@@ -3,40 +3,59 @@ defmodule Tunnel.EndToEndTest do
 
   setup do
     n = System.unique_integer([:positive])
+
     splice_sup = :"splice_sup_e2e_#{n}"
-    tunnels = :"tunnels_e2e_#{n}"
+    requests = :"requests_e2e_#{n}"
+    control = :"control_e2e_#{n}"
+    control_conns = :"control_conns_e2e_#{n}"
 
     start_supervised!({Tunnel.SpliceSupervisor, name: splice_sup})
-    start_supervised!({Tunnel.Relay.Tunnels, name: tunnels})
+    start_supervised!({Tunnel.Relay.Requests, name: requests})
+    start_supervised!({Tunnel.Relay.Control, name: control})
+    start_supervised!({DynamicSupervisor, name: control_conns, strategy: :one_for_one})
 
-    tunnel_acc =
+    control_acc =
       start_supervised!(
         {Tunnel.Relay.Acceptor,
-         {:"tunnel_e2e_#{n}", 0, fn sock -> Tunnel.Relay.handle_tunnel(tunnels, sock) end}}
+         {:"control_acc_#{n}", 0,
+          fn sock -> Tunnel.Relay.handle_control(sock, control_conns, control) end}}
+      )
+
+    proxy_acc =
+      start_supervised!(
+        {Tunnel.Relay.Acceptor,
+         {:"proxy_acc_#{n}", 0,
+          fn sock -> Tunnel.Relay.handle_proxy(sock, requests, splice_sup) end}}
       )
 
     public_acc =
       start_supervised!(
         {Tunnel.Relay.Acceptor,
-         {:"public_e2e_#{n}", 0,
-          fn sock -> Tunnel.Relay.handle_public(tunnels, splice_sup, sock) end}}
+         {:"public_acc_#{n}", 0,
+          fn sock -> Tunnel.Relay.handle_public(sock, requests, control) end}}
       )
 
-    tunnel_port = Tunnel.Relay.Acceptor.port(tunnel_acc)
+    control_port = Tunnel.Relay.Acceptor.port(control_acc)
+    proxy_port = Tunnel.Relay.Acceptor.port(proxy_acc)
     public_port = Tunnel.Relay.Acceptor.port(public_acc)
 
     {app_port, app_listen} = start_local_app()
     on_exit(fn -> :gen_tcp.close(app_listen) end)
 
+    proxies = :"proxies_e2e_#{n}"
+    start_supervised!({Task.Supervisor, name: proxies})
+
     start_supervised!(
-      {Tunnel.Agent.Connection,
+      {Tunnel.Agent.Control,
        relay_host: ~c"localhost",
-       tunnel_port: tunnel_port,
+       control_port: control_port,
+       proxy_port: proxy_port,
        local_app_port: app_port,
+       proxies: proxies,
        splice_supervisor: splice_sup}
     )
 
-    %{tunnels: tunnels, public_port: public_port}
+    %{public_port: public_port, control: control}
   end
 
   defp start_local_app do
@@ -50,14 +69,25 @@ defmodule Tunnel.EndToEndTest do
     case :gen_tcp.accept(listen) do
       {:ok, sock} ->
         spawn(fn ->
-          :gen_tcp.recv(sock, 0, 5000)
-          body = "hello"
+          case :gen_tcp.recv(sock, 0, 5_000) do
+            {:ok, data} ->
+              path =
+                case Regex.run(~r{^GET (\S+)}, data) do
+                  [_, p] -> p
+                  _ -> data
+                end
 
-          resp =
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: #{byte_size(body)}\r\n\r\n#{body}"
+              body = path
 
-          :gen_tcp.send(sock, resp)
-          :gen_tcp.close(sock)
+              resp =
+                "HTTP/1.1 200 OK\r\nContent-Length: #{byte_size(body)}\r\nConnection: close\r\n\r\n#{body}"
+
+              :gen_tcp.send(sock, resp)
+              :gen_tcp.close(sock)
+
+            _ ->
+              :gen_tcp.close(sock)
+          end
         end)
 
         local_app_loop(listen)
@@ -67,45 +97,57 @@ defmodule Tunnel.EndToEndTest do
     end
   end
 
-  defp wait_for_parked(tunnels, timeout \\ 2000) do
+  defp wait_for_control(control, timeout \\ 2_000) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_parked(tunnels, deadline)
-  end
 
-  defp do_wait_parked(tunnels, deadline) do
-    q = :sys.get_state(tunnels)
-
-    if :queue.is_empty(q) do
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(50)
-        do_wait_parked(tunnels, deadline)
+    Enum.find(Stream.repeatedly(fn -> :sys.get_state(control).pid end), fn pid ->
+      if pid do
+        true
       else
-        flunk("timed out waiting for agent to park a connection")
+        Process.sleep(50)
+
+        System.monotonic_time(:millisecond) < deadline ||
+          flunk("timed out waiting for control connection")
       end
-    else
-      :ok
-    end
+    end)
   end
 
-  test "request is served end-to-end through the tunnel", %{tunnels: tunnels, public_port: pp} do
-    :ok = wait_for_parked(tunnels)
-
-    {:ok, client} = :gen_tcp.connect(~c"localhost", pp, [:binary, active: false])
-    :ok = :gen_tcp.send(client, "GET / HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
-
-    response = recv_all(client, "")
-
-    assert response =~ "200"
-    assert response =~ "hello"
-
-    :gen_tcp.close(client)
+  defp http_get(port, path) do
+    {:ok, sock} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
+    :ok = :gen_tcp.send(sock, "GET #{path} HTTP/1.0\r\nHost: localhost\r\n\r\n")
+    data = recv_all(sock, "")
+    :gen_tcp.close(sock)
+    data
   end
 
   defp recv_all(sock, acc) do
-    case :gen_tcp.recv(sock, 0, 3000) do
+    case :gen_tcp.recv(sock, 0, 3_000) do
       {:ok, data} -> recv_all(sock, acc <> data)
       {:error, :closed} -> acc
       {:error, _} -> acc
     end
+  end
+
+  test "two concurrent requests served without cross-wiring", %{public_port: pp, control: ctrl} do
+    wait_for_control(ctrl)
+
+    parent = self()
+    spawn(fn -> send(parent, {:a, http_get(pp, "/path-alpha")}) end)
+    spawn(fn -> send(parent, {:b, http_get(pp, "/path-beta")}) end)
+
+    results =
+      for _ <- 1..2 do
+        receive do
+          {k, v} -> {k, v}
+        after
+          5_000 -> flunk("timed out waiting for response")
+        end
+      end
+      |> Map.new()
+
+    assert results.a =~ "/path-alpha"
+    assert results.b =~ "/path-beta"
+    refute results.a =~ "/path-beta"
+    refute results.b =~ "/path-alpha"
   end
 end
