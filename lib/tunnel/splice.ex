@@ -1,9 +1,5 @@
 defmodule Tunnel.Splice do
-  use GenServer
-
-  def child_spec(_opts) do
-    %{id: __MODULE__, start: {__MODULE__, :start_link, [[]]}, restart: :temporary}
-  end
+  use GenServer, restart: :temporary
 
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, %{})
 

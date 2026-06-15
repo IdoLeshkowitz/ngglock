@@ -2,4 +2,5 @@ import Config
 
 config :tunnel, Tunnel,
   role: :none,
-  tunnel_port: 7070
+  control_port: 7000,
+  proxy_port: 7001
