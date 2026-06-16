@@ -11,8 +11,8 @@ defmodule Tunnel.Relay.Requests do
     GenServer.start_link(__MODULE__, %{}, name: name)
   end
 
-  def put(server \\ __MODULE__, token, socket) do
-    GenServer.cast(server, {:put, token, socket})
+  def put(server \\ __MODULE__, token, {socket, head}) do
+    GenServer.cast(server, {:put, token, {socket, head}})
   end
 
   def take(server \\ __MODULE__, token, target),
@@ -22,7 +22,8 @@ defmodule Tunnel.Relay.Requests do
   def init(m), do: {:ok, m}
 
   @impl true
-  def handle_cast({:put, token, sock}, m), do: {:noreply, Map.put(m, token, sock)}
+  def handle_cast({:put, token, {socket, head}}, m),
+    do: {:noreply, Map.put(m, token, {socket, head})}
 
   @impl true
   def handle_call({:take, token, target}, _from, m) do
@@ -30,9 +31,9 @@ defmodule Tunnel.Relay.Requests do
       {nil, m} ->
         {:reply, nil, m}
 
-      {sock, m} ->
+      {{sock, head}, m} ->
         :ok = :gen_tcp.controlling_process(sock, target)
-        {:reply, sock, m}
+        {:reply, {sock, head}, m}
     end
   end
 end

@@ -8,6 +8,7 @@ config :tunnel, Tunnel,
   proxy_port: 7001,
   public_port: 8080,
   relay_host: "localhost",
-  local_app_port: 4000
+  local_app_port: 4000,
+  subdomain: "foo"
 
 import_config "#{config_env()}.exs"
