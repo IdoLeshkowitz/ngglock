@@ -1,13 +1,16 @@
 defmodule Tunnel.Agent.Control do
   use GenServer
+  require Logger
 
   @relay_host Application.compile_env!(:tunnel, [Tunnel, :relay_host])
   @control_port Application.compile_env!(:tunnel, [Tunnel, :control_port])
   @proxy_port Application.compile_env!(:tunnel, [Tunnel, :proxy_port])
   @local_app_port Application.compile_env!(:tunnel, [Tunnel, :local_app_port])
+  @subdomain Application.compile_env!(:tunnel, [Tunnel, :subdomain])
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts)
+    {name, opts} = Keyword.pop(opts, :name)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @impl true
@@ -18,6 +21,7 @@ defmodule Tunnel.Agent.Control do
         control_port: @control_port,
         proxy_port: @proxy_port,
         local_app_port: @local_app_port,
+        subdomain: @subdomain,
         proxies: Tunnel.Agent.Proxies,
         splice_supervisor: Tunnel.SpliceSupervisor
       )
@@ -27,6 +31,7 @@ defmodule Tunnel.Agent.Control do
       control_port: Keyword.fetch!(opts, :control_port),
       proxy_port: Keyword.fetch!(opts, :proxy_port),
       local_app_port: Keyword.fetch!(opts, :local_app_port),
+      subdomain: Keyword.fetch!(opts, :subdomain),
       proxies: Keyword.fetch!(opts, :proxies),
       splice_supervisor: Keyword.fetch!(opts, :splice_supervisor),
       socket: nil,
@@ -40,6 +45,7 @@ defmodule Tunnel.Agent.Control do
   def handle_continue(:connect, st) do
     case :gen_tcp.connect(st.relay_host, st.control_port, [:binary, active: false, packet: 4]) do
       {:ok, sock} ->
+        :ok = :gen_tcp.send(sock, Tunnel.Protocol.encode({:register, st.subdomain}))
         :ok = :inet.setopts(sock, active: :once)
         {:noreply, %{st | socket: sock}}
 
@@ -57,6 +63,12 @@ defmodule Tunnel.Agent.Control do
           st.proxies,
           fn -> Tunnel.Agent.Proxy.open(token, st) end
         )
+
+      {:registered, _sub} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("registration rejected: #{reason}")
     end
 
     :ok = :inet.setopts(sock, active: :once)

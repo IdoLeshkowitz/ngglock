@@ -1,11 +1,14 @@
 defmodule Tunnel.Relay.ControlConnection do
   use GenServer, restart: :temporary
 
-  def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, %{})
+  def start_link(opts \\ []) do
+    routes = Keyword.get(opts, :routes, Tunnel.Relay.Routes)
+    GenServer.start_link(__MODULE__, %{routes: routes})
+  end
 
-  def attach(pid, socket, control \\ Tunnel.Relay.Control) do
+  def attach(pid, socket) do
     :ok = :gen_tcp.controlling_process(socket, pid)
-    GenServer.cast(pid, {:attach, socket, control})
+    GenServer.cast(pid, {:attach, socket})
   end
 
   def send_open(pid, token), do: GenServer.cast(pid, {:send_open, token})
@@ -14,10 +17,9 @@ defmodule Tunnel.Relay.ControlConnection do
   def init(st), do: {:ok, st}
 
   @impl true
-  def handle_cast({:attach, sock, control}, _st) do
+  def handle_cast({:attach, sock}, st) do
     :ok = :inet.setopts(sock, packet: 4, active: :once)
-    Tunnel.Relay.Control.register(control, self())
-    {:noreply, %{socket: sock}}
+    {:noreply, Map.merge(st, %{socket: sock, subdomain: nil})}
   end
 
   def handle_cast({:send_open, token}, %{socket: s} = st) do
@@ -26,8 +28,25 @@ defmodule Tunnel.Relay.ControlConnection do
   end
 
   @impl true
-  def handle_info({:tcp, s, _frame}, st) do
-    :inet.setopts(s, active: :once)
+  def handle_info({:tcp, sock, frame}, st) do
+    st =
+      case Tunnel.Protocol.decode(frame) do
+        {:register, sub} ->
+          case Tunnel.Relay.Routes.register(sub, st.routes) do
+            :ok ->
+              :gen_tcp.send(sock, Tunnel.Protocol.encode({:registered, sub}))
+              %{st | subdomain: sub}
+
+            {:error, reason} ->
+              :gen_tcp.send(sock, Tunnel.Protocol.encode({:error, reason}))
+              st
+          end
+
+        _ ->
+          st
+      end
+
+    :ok = :inet.setopts(sock, active: :once)
     {:noreply, st}
   end
 

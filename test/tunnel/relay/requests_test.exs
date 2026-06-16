@@ -8,7 +8,7 @@ defmodule Tunnel.Relay.RequestsTest do
     %{requests: name}
   end
 
-  test "put then take returns correct socket and removes it", %{requests: req} do
+  test "put then take returns correct {socket, head} and removes it", %{requests: req} do
     {:ok, l1} = :gen_tcp.listen(0, [:binary, active: false])
     {:ok, l2} = :gen_tcp.listen(0, [:binary, active: false])
     {:ok, p1} = :inet.port(l1)
@@ -23,11 +23,11 @@ defmodule Tunnel.Relay.RequestsTest do
     :ok = :gen_tcp.controlling_process(s1, req_pid)
     :ok = :gen_tcp.controlling_process(s2, req_pid)
 
-    Tunnel.Relay.Requests.put(req, t1, s1)
-    Tunnel.Relay.Requests.put(req, t2, s2)
+    Tunnel.Relay.Requests.put(req, t1, {s1, "head1"})
+    Tunnel.Relay.Requests.put(req, t2, {s2, "head2"})
 
-    assert Tunnel.Relay.Requests.take(req, t1, self()) == s1
-    assert Tunnel.Relay.Requests.take(req, t2, self()) == s2
+    assert Tunnel.Relay.Requests.take(req, t1, self()) == {s1, "head1"}
+    assert Tunnel.Relay.Requests.take(req, t2, self()) == {s2, "head2"}
 
     assert Tunnel.Relay.Requests.take(req, t1, self()) == nil
 

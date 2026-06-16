@@ -1,52 +1,62 @@
 defmodule Tunnel.Relay.ControlConnectionTest do
   use ExUnit.Case, async: true
 
-  defp start_conn do
-    {:ok, pid} = Tunnel.Relay.ControlConnection.start_link()
-    pid
-  end
-
-  defp loopback_pair do
-    {:ok, l} = :gen_tcp.listen(0, [:binary, active: false])
-    {:ok, port} = :inet.port(l)
-    {:ok, client} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
-    {:ok, server} = :gen_tcp.accept(l)
-    :gen_tcp.close(l)
-    {client, server}
-  end
-
-  test "send_open delivers a framed {:open, token} to the peer" do
-    {client, server} = loopback_pair()
+  setup do
     n = System.unique_integer([:positive])
-    ctrl = :"ctrl_cc_#{n}"
-    start_supervised!({Tunnel.Relay.Control, name: ctrl})
+    routes = :"routes_cc_#{n}"
+    start_supervised!({Registry, keys: :unique, name: routes})
 
-    pid = start_conn()
-    Tunnel.Relay.ControlConnection.attach(pid, server, ctrl)
+    {:ok, cc} = start_supervised({Tunnel.Relay.ControlConnection, routes: routes})
 
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, packet: 4])
+    {:ok, port} = :inet.port(listen)
+
+    {:ok, client} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false, packet: 4])
+    {:ok, server} = :gen_tcp.accept(listen)
+
+    Tunnel.Relay.ControlConnection.attach(cc, server)
+
+    %{cc: cc, client: client, routes: routes}
+  end
+
+  test "register sends :registered and records subdomain", %{
+    cc: cc,
+    client: client,
+    routes: routes
+  } do
+    :ok = :gen_tcp.send(client, Tunnel.Protocol.encode({:register, "foo"}))
+    {:ok, frame} = :gen_tcp.recv(client, 0, 1_000)
+    assert Tunnel.Protocol.decode(frame) == {:registered, "foo"}
+    assert Tunnel.Relay.Routes.whereis("foo", routes) == cc
+  end
+
+  test "duplicate registration sends :error", %{client: client, routes: routes} do
+    other =
+      spawn(fn ->
+        Registry.register(routes, "taken", nil)
+        receive do: (:stop -> :ok)
+      end)
+
+    ref = Process.monitor(other)
+
+    :ok = :gen_tcp.send(client, Tunnel.Protocol.encode({:register, "taken"}))
+    {:ok, frame} = :gen_tcp.recv(client, 0, 1_000)
+    assert Tunnel.Protocol.decode(frame) == {:error, "taken"}
+
+    send(other, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^other, _}
+  end
+
+  test "send_open delivers :open frame to client", %{cc: cc, client: client} do
     token = :crypto.strong_rand_bytes(16)
-    Tunnel.Relay.ControlConnection.send_open(pid, token)
-
-    # client is raw; read the 4-byte length prefix then the body
-    {:ok, <<len::32>>} = :gen_tcp.recv(client, 4, 1_000)
-    {:ok, body} = :gen_tcp.recv(client, len, 1_000)
-    assert Tunnel.Protocol.decode(body) == {:open, token}
-
-    :gen_tcp.close(client)
+    Tunnel.Relay.ControlConnection.send_open(cc, token)
+    {:ok, frame} = :gen_tcp.recv(client, 0, 1_000)
+    assert Tunnel.Protocol.decode(frame) == {:open, token}
   end
 
-  test "process stops normally when the peer closes the connection" do
-    {client, server} = loopback_pair()
-    n = System.unique_integer([:positive])
-    ctrl = :"ctrl_cc2_#{n}"
-    start_supervised!({Tunnel.Relay.Control, name: ctrl})
-
-    pid = start_conn()
-    ref = Process.monitor(pid)
-    Tunnel.Relay.ControlConnection.attach(pid, server, ctrl)
-
+  test "tcp_closed stops the process", %{cc: cc, client: client} do
+    ref = Process.monitor(cc)
     :gen_tcp.close(client)
-
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^cc, _}, 1_000
   end
 end

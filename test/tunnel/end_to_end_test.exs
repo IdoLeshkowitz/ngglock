@@ -6,19 +6,19 @@ defmodule Tunnel.EndToEndTest do
 
     splice_sup = :"splice_sup_e2e_#{n}"
     requests = :"requests_e2e_#{n}"
-    control = :"control_e2e_#{n}"
+    routes = :"routes_e2e_#{n}"
     control_conns = :"control_conns_e2e_#{n}"
 
     start_supervised!({Tunnel.SpliceSupervisor, name: splice_sup})
     start_supervised!({Tunnel.Relay.Requests, name: requests})
-    start_supervised!({Tunnel.Relay.Control, name: control})
+    start_supervised!({Registry, keys: :unique, name: routes})
     start_supervised!({DynamicSupervisor, name: control_conns, strategy: :one_for_one})
 
     control_acc =
       start_supervised!(
         {Tunnel.Relay.Acceptor,
          {:"control_acc_#{n}", 0,
-          fn sock -> Tunnel.Relay.handle_control(sock, control_conns, control) end}}
+          fn sock -> Tunnel.Relay.handle_control(sock, control_conns, routes) end}}
       )
 
     proxy_acc =
@@ -32,7 +32,7 @@ defmodule Tunnel.EndToEndTest do
       start_supervised!(
         {Tunnel.Relay.Acceptor,
          {:"public_acc_#{n}", 0,
-          fn sock -> Tunnel.Relay.handle_public(sock, requests, control) end}}
+          fn sock -> Tunnel.Relay.handle_public(sock, requests, routes) end}}
       )
 
     control_port = Tunnel.Relay.Acceptor.port(control_acc)
@@ -51,11 +51,14 @@ defmodule Tunnel.EndToEndTest do
        control_port: control_port,
        proxy_port: proxy_port,
        local_app_port: app_port,
+       subdomain: "myapp",
        proxies: proxies,
        splice_supervisor: splice_sup}
     )
 
-    %{public_port: public_port, control: control}
+    wait_for_route(routes, "myapp")
+
+    %{public_port: public_port, routes: routes}
   end
 
   defp start_local_app do
@@ -97,24 +100,35 @@ defmodule Tunnel.EndToEndTest do
     end
   end
 
-  defp wait_for_control(control, timeout \\ 2_000) do
+  defp wait_for_route(routes, sub, timeout \\ 2_000) do
     deadline = System.monotonic_time(:millisecond) + timeout
 
-    Enum.find(Stream.repeatedly(fn -> :sys.get_state(control).pid end), fn pid ->
-      if pid do
-        true
-      else
-        Process.sleep(50)
+    Stream.repeatedly(fn ->
+      case Registry.lookup(routes, sub) do
+        [{_pid, _}] ->
+          true
 
-        System.monotonic_time(:millisecond) < deadline ||
-          flunk("timed out waiting for control connection")
+        [] ->
+          if System.monotonic_time(:millisecond) < deadline do
+            Process.sleep(50)
+            false
+          else
+            flunk("timed out waiting for route #{sub}")
+          end
       end
     end)
+    |> Enum.find(& &1)
   end
 
   defp http_get(port, path) do
     {:ok, sock} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
-    :ok = :gen_tcp.send(sock, "GET #{path} HTTP/1.0\r\nHost: localhost\r\n\r\n")
+
+    :ok =
+      :gen_tcp.send(
+        sock,
+        "GET #{path} HTTP/1.1\r\nHost: myapp.localtest.me\r\nConnection: close\r\n\r\n"
+      )
+
     data = recv_all(sock, "")
     :gen_tcp.close(sock)
     data
@@ -128,9 +142,7 @@ defmodule Tunnel.EndToEndTest do
     end
   end
 
-  test "two concurrent requests served without cross-wiring", %{public_port: pp, control: ctrl} do
-    wait_for_control(ctrl)
-
+  test "two concurrent requests served without cross-wiring", %{public_port: pp} do
     parent = self()
     spawn(fn -> send(parent, {:a, http_get(pp, "/path-alpha")}) end)
     spawn(fn -> send(parent, {:b, http_get(pp, "/path-beta")}) end)
