@@ -16,9 +16,14 @@ defmodule Tunnel.Application do
   defp shared_children, do: [Tunnel.SpliceSupervisor]
 
   defp role_children(:relay) do
-    control_port = Application.fetch_env!(:tunnel, Tunnel) |> Keyword.get(:control_port, @compile_control_port)
-    proxy_port = Application.fetch_env!(:tunnel, Tunnel) |> Keyword.get(:proxy_port, @compile_proxy_port)
-    public_port = Application.fetch_env!(:tunnel, Tunnel) |> Keyword.get(:public_port, @compile_public_port)
+    control_port =
+      Application.fetch_env!(:tunnel, Tunnel) |> Keyword.get(:control_port, @compile_control_port)
+
+    proxy_port =
+      Application.fetch_env!(:tunnel, Tunnel) |> Keyword.get(:proxy_port, @compile_proxy_port)
+
+    public_port =
+      Application.fetch_env!(:tunnel, Tunnel) |> Keyword.get(:public_port, @compile_public_port)
 
     Logger.info(
       "relay control_port=#{control_port} proxy_port=#{proxy_port} public_port=#{public_port}"
@@ -28,8 +33,7 @@ defmodule Tunnel.Application do
       Tunnel.Relay.Requests,
       {Registry, keys: :unique, name: Tunnel.Relay.Routes},
       {DynamicSupervisor, name: Tunnel.Relay.ControlConnections, strategy: :one_for_one},
-      {Tunnel.Relay.Acceptor,
-       {:control_listener, control_port, &Tunnel.Relay.handle_control/1}},
+      {Tunnel.Relay.Acceptor, {:control_listener, control_port, &Tunnel.Relay.handle_control/1}},
       {Tunnel.Relay.Acceptor, {:proxy_listener, proxy_port, &Tunnel.Relay.handle_proxy/1}},
       {Tunnel.Relay.Acceptor, {:public_listener, public_port, &Tunnel.Relay.handle_public/1}}
     ]

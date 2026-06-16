@@ -4,8 +4,14 @@ defmodule Tunnel.Relay do
   @head_timeout 5_000
   @max_head 8192
 
-  def handle_control(socket, sup \\ Tunnel.Relay.ControlConnections, routes \\ Tunnel.Relay.Routes) do
-    {:ok, pid} = DynamicSupervisor.start_child(sup, {Tunnel.Relay.ControlConnection, routes: routes})
+  def handle_control(
+        socket,
+        sup \\ Tunnel.Relay.ControlConnections,
+        routes \\ Tunnel.Relay.Routes
+      ) do
+    {:ok, pid} =
+      DynamicSupervisor.start_child(sup, {Tunnel.Relay.ControlConnection, routes: routes})
+
     Tunnel.Relay.ControlConnection.attach(pid, socket)
   end
 
@@ -31,7 +37,11 @@ defmodule Tunnel.Relay do
     end
   end
 
-  def handle_proxy(socket, requests \\ Tunnel.Relay.Requests, splice_sup \\ Tunnel.SpliceSupervisor) do
+  def handle_proxy(
+        socket,
+        requests \\ Tunnel.Relay.Requests,
+        splice_sup \\ Tunnel.SpliceSupervisor
+      ) do
     case :gen_tcp.recv(socket, @token_bytes, @token_timeout) do
       {:ok, token} ->
         case Tunnel.Relay.Requests.take(requests, token, self()) do
@@ -68,12 +78,20 @@ defmodule Tunnel.Relay do
   end
 
   defp respond(sock, 404) do
-    :gen_tcp.send(sock, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    :gen_tcp.send(
+      sock,
+      "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+
     :gen_tcp.close(sock)
   end
 
   defp respond(sock, 400) do
-    :gen_tcp.send(sock, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    :gen_tcp.send(
+      sock,
+      "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+
     :gen_tcp.close(sock)
   end
 end

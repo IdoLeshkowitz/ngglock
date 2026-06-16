@@ -122,7 +122,13 @@ defmodule Tunnel.EndToEndTest do
 
   defp http_get(port, path) do
     {:ok, sock} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
-    :ok = :gen_tcp.send(sock, "GET #{path} HTTP/1.1\r\nHost: myapp.localtest.me\r\nConnection: close\r\n\r\n")
+
+    :ok =
+      :gen_tcp.send(
+        sock,
+        "GET #{path} HTTP/1.1\r\nHost: myapp.localtest.me\r\nConnection: close\r\n\r\n"
+      )
+
     data = recv_all(sock, "")
     :gen_tcp.close(sock)
     data

@@ -68,7 +68,6 @@ defmodule Tunnel.Agent.Control do
         :ok
 
       {:error, reason} ->
-
         Logger.error("registration rejected: #{reason}")
     end
 

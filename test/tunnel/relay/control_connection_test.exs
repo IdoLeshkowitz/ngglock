@@ -19,7 +19,11 @@ defmodule Tunnel.Relay.ControlConnectionTest do
     %{cc: cc, client: client, routes: routes}
   end
 
-  test "register sends :registered and records subdomain", %{cc: cc, client: client, routes: routes} do
+  test "register sends :registered and records subdomain", %{
+    cc: cc,
+    client: client,
+    routes: routes
+  } do
     :ok = :gen_tcp.send(client, Tunnel.Protocol.encode({:register, "foo"}))
     {:ok, frame} = :gen_tcp.recv(client, 0, 1_000)
     assert Tunnel.Protocol.decode(frame) == {:registered, "foo"}

@@ -7,7 +7,8 @@ defmodule Tunnel.ProtocolTest do
   end
 
   test "round-trips {:register, subdomain}" do
-    assert Tunnel.Protocol.decode(Tunnel.Protocol.encode({:register, "foo"})) == {:register, "foo"}
+    assert Tunnel.Protocol.decode(Tunnel.Protocol.encode({:register, "foo"})) ==
+             {:register, "foo"}
   end
 
   test "round-trips {:registered, subdomain}" do

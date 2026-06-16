@@ -80,8 +80,17 @@ defmodule Tunnel.Relay.RoutesTest do
 
     Stream.repeatedly(fn ->
       case Tunnel.Relay.Routes.whereis("dying", reg) do
-        nil -> true
-        _ -> if System.monotonic_time(:millisecond) < deadline, do: (Process.sleep(5); false), else: false
+        nil ->
+          true
+
+        _ ->
+          if System.monotonic_time(:millisecond) < deadline,
+            do:
+              (
+                Process.sleep(5)
+                false
+              ),
+            else: false
       end
     end)
     |> Enum.find(& &1)
