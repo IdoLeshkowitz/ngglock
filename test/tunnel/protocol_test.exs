@@ -20,6 +20,14 @@ defmodule Tunnel.ProtocolTest do
     assert Tunnel.Protocol.decode(Tunnel.Protocol.encode({:error, "taken"})) == {:error, "taken"}
   end
 
+  test "round-trips {:ping}" do
+    assert Tunnel.Protocol.decode(Tunnel.Protocol.encode({:ping})) == {:ping}
+  end
+
+  test "round-trips {:pong}" do
+    assert Tunnel.Protocol.decode(Tunnel.Protocol.encode({:pong})) == {:pong}
+  end
+
   test "function clause error for an unknown message encoding" do
     assert_raise FunctionClauseError, fn ->
       raise Tunnel.Protocol.encode(nil)

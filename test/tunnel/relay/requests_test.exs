@@ -41,4 +41,56 @@ defmodule Tunnel.Relay.RequestsTest do
     unknown = :crypto.strong_rand_bytes(16)
     assert Tunnel.Relay.Requests.take(req, unknown, self()) == nil
   end
+
+  @park_timeout Application.compile_env!(:tunnel, [Tunnel, :park_timeout])
+
+  test "parked socket is expired and closed when not taken", %{requests: req} do
+    {:ok, server_listen} = :gen_tcp.listen(0, [:binary, active: false])
+    {:ok, port} = :inet.port(server_listen)
+    {:ok, client} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
+    {:ok, server} = :gen_tcp.accept(server_listen)
+
+    req_pid = GenServer.whereis(req)
+    :ok = :gen_tcp.controlling_process(server, req_pid)
+
+    token = :crypto.strong_rand_bytes(16)
+    Tunnel.Relay.Requests.put(req, token, {server, "head"})
+
+    # Wait for expiry
+    Process.sleep(@park_timeout + 100)
+
+    # Entry removed
+    assert Tunnel.Relay.Requests.take(req, token, self()) == nil
+    # Client end sees the server was closed
+    assert :gen_tcp.recv(client, 0, 500) == {:error, :closed}
+
+    :gen_tcp.close(client)
+    :gen_tcp.close(server_listen)
+  end
+
+  test "take cancels the expiry timer so socket stays open", %{requests: req} do
+    {:ok, server_listen} = :gen_tcp.listen(0, [:binary, active: false])
+    {:ok, port} = :inet.port(server_listen)
+    {:ok, client} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
+    {:ok, server} = :gen_tcp.accept(server_listen)
+
+    req_pid = GenServer.whereis(req)
+    :ok = :gen_tcp.controlling_process(server, req_pid)
+
+    token = :crypto.strong_rand_bytes(16)
+    Tunnel.Relay.Requests.put(req, token, {server, "head"})
+
+    # Take before expiry
+    assert {^server, "head"} = Tunnel.Relay.Requests.take(req, token, self())
+
+    # Wait past park_timeout — no spurious close since we took it
+    Process.sleep(@park_timeout + 100)
+
+    # Socket still open
+    assert :gen_tcp.recv(client, 0, 100) == {:error, :timeout}
+
+    :gen_tcp.close(server)
+    :gen_tcp.close(client)
+    :gen_tcp.close(server_listen)
+  end
 end

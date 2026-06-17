@@ -39,8 +39,14 @@ defmodule Tunnel.Application do
     ]
   end
 
-  defp role_children(:agent),
-    do: [{Task.Supervisor, name: Tunnel.Agent.Proxies}, Tunnel.Agent.Control]
+  defp role_children(:agent) do
+    cfg = Application.fetch_env!(:tunnel, Tunnel)
+    subdomain = Keyword.get(cfg, :subdomain, "?")
+    relay_host = Keyword.get(cfg, :relay_host, "?")
+    control_port = Keyword.get(cfg, :control_port, "?")
+    Logger.info("agent starting subdomain=#{subdomain} relay=#{relay_host}:#{control_port}")
+    [{Task.Supervisor, name: Tunnel.Agent.Proxies}, Tunnel.Agent.Control]
+  end
 
   defp role_children(:all), do: role_children(:relay) ++ role_children(:agent)
   defp role_children(:none), do: []

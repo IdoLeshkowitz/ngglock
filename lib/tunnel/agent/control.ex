@@ -1,5 +1,5 @@
 defmodule Tunnel.Agent.Control do
-  use GenServer
+  @behaviour :gen_statem
   require Logger
 
   @relay_host Application.compile_env!(:tunnel, [Tunnel, :relay_host])
@@ -7,13 +7,30 @@ defmodule Tunnel.Agent.Control do
   @proxy_port Application.compile_env!(:tunnel, [Tunnel, :proxy_port])
   @local_app_port Application.compile_env!(:tunnel, [Tunnel, :local_app_port])
   @subdomain Application.compile_env!(:tunnel, [Tunnel, :subdomain])
+  @heartbeat_interval Application.compile_env!(:tunnel, [Tunnel, :heartbeat_interval])
+  @heartbeat_timeout Application.compile_env!(:tunnel, [Tunnel, :heartbeat_timeout])
+  @register_retry Application.compile_env!(:tunnel, [Tunnel, :register_retry])
+  @connect_backoff Application.compile_env!(:tunnel, [Tunnel, :connect_backoff])
+  @control_packet Application.compile_env!(:tunnel, [Tunnel, :control_packet])
+
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :permanent}
+  end
 
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name)
-    GenServer.start_link(__MODULE__, opts, name: name)
+
+    if name do
+      :gen_statem.start_link({:local, name}, __MODULE__, opts, [])
+    else
+      :gen_statem.start_link(__MODULE__, opts, [])
+    end
   end
 
-  @impl true
+  @impl :gen_statem
+  def callback_mode, do: :state_functions
+
+  @impl :gen_statem
   def init(opts) do
     opts =
       Keyword.validate!(opts,
@@ -26,7 +43,7 @@ defmodule Tunnel.Agent.Control do
         splice_supervisor: Tunnel.SpliceSupervisor
       )
 
-    state = %{
+    data = %{
       relay_host: Keyword.fetch!(opts, :relay_host),
       control_port: Keyword.fetch!(opts, :control_port),
       proxy_port: Keyword.fetch!(opts, :proxy_port),
@@ -35,49 +52,126 @@ defmodule Tunnel.Agent.Control do
       proxies: Keyword.fetch!(opts, :proxies),
       splice_supervisor: Keyword.fetch!(opts, :splice_supervisor),
       socket: nil,
-      backoff: 500
+      last_seen: mono(),
+      backoff: @connect_backoff
     }
 
-    {:ok, state, {:continue, :connect}}
+    Logger.info("agent starting subdomain=#{data.subdomain} relay=#{relay_str(data)}",
+      subdomain: data.subdomain
+    )
+
+    {:ok, :connecting, data, [{:next_event, :internal, :connect}]}
   end
 
-  @impl true
-  def handle_continue(:connect, st) do
-    case :gen_tcp.connect(st.relay_host, st.control_port, [:binary, active: false, packet: 4]) do
+  def connecting(:internal, :connect, data) do
+    case :gen_tcp.connect(data.relay_host, data.control_port, [
+           :binary,
+           active: false,
+           packet: @control_packet
+         ]) do
       {:ok, sock} ->
-        :ok = :gen_tcp.send(sock, Tunnel.Protocol.encode({:register, st.subdomain}))
+        :ok = :gen_tcp.send(sock, Tunnel.Protocol.encode({:register, data.subdomain}))
         :ok = :inet.setopts(sock, active: :once)
-        {:noreply, %{st | socket: sock}}
-
-      {:error, _} ->
-        Process.sleep(st.backoff)
-        {:noreply, st, {:continue, :connect}}
-    end
-  end
-
-  @impl true
-  def handle_info({:tcp, sock, frame}, st) do
-    case Tunnel.Protocol.decode(frame) do
-      {:open, token} ->
-        Task.Supervisor.start_child(
-          st.proxies,
-          fn -> Tunnel.Agent.Proxy.open(token, st) end
-        )
-
-      {:registered, _sub} ->
-        :ok
+        {:next_state, :connected, %{data | socket: sock}}
 
       {:error, reason} ->
-        Logger.error("registration rejected: #{reason}")
-    end
+        Logger.warning(
+          "control connect failed: #{inspect(reason)}; retry in #{data.backoff}ms relay=#{relay_str(data)}",
+          reason: inspect(reason),
+          relay: relay_str(data)
+        )
 
-    :ok = :inet.setopts(sock, active: :once)
-    {:noreply, st}
+        {:keep_state_and_data, [{{:timeout, :retry}, data.backoff, nil}]}
+    end
   end
 
-  def handle_info({:tcp_closed, _}, st),
-    do: {:noreply, %{st | socket: nil}, {:continue, :connect}}
+  def connecting({:timeout, :retry}, _content, _data) do
+    {:keep_state_and_data, [{:next_event, :internal, :connect}]}
+  end
 
-  def handle_info({:tcp_error, _, _}, st),
-    do: {:noreply, %{st | socket: nil}, {:continue, :connect}}
+  def connected(:info, {:tcp, sock, frame}, data) do
+    :ok = :inet.setopts(sock, active: :once)
+
+    case Tunnel.Protocol.decode(frame) do
+      {:registered, sub} ->
+        Logger.info("tunnel registered subdomain=#{sub}", subdomain: sub)
+
+        {:next_state, :registered, %{data | last_seen: mono()},
+         [{:state_timeout, @heartbeat_interval, :heartbeat}]}
+
+      {:error, reason} ->
+        Logger.warning(
+          "registration rejected subdomain=#{data.subdomain} reason=#{inspect(reason)}; will retry",
+          subdomain: data.subdomain,
+          reason: inspect(reason)
+        )
+
+        {:keep_state_and_data, [{{:timeout, :reregister}, @register_retry, nil}]}
+
+      _ ->
+        :keep_state_and_data
+    end
+  end
+
+  def connected({:timeout, :reregister}, _content, data) do
+    :gen_tcp.send(data.socket, Tunnel.Protocol.encode({:register, data.subdomain}))
+    {:keep_state_and_data, []}
+  end
+
+  def connected(:info, {:tcp_closed, _}, data) do
+    Logger.warning("control connection closed, reconnecting subdomain=#{data.subdomain}",
+      subdomain: data.subdomain
+    )
+
+    {:next_state, :connecting, %{data | socket: nil}, [{:next_event, :internal, :connect}]}
+  end
+
+  def connected(:info, {:tcp_error, _, _}, data) do
+    {:next_state, :connecting, %{data | socket: nil}, [{:next_event, :internal, :connect}]}
+  end
+
+  def registered(:state_timeout, :heartbeat, data) do
+    if mono() - data.last_seen > @heartbeat_timeout do
+      Logger.warning("no heartbeat from relay, reconnecting subdomain=#{data.subdomain}",
+        subdomain: data.subdomain
+      )
+
+      :gen_tcp.close(data.socket)
+      {:next_state, :connecting, %{data | socket: nil}, [{:next_event, :internal, :connect}]}
+    else
+      Logger.info("heartbeat ping subdomain=#{data.subdomain}", subdomain: data.subdomain)
+      :gen_tcp.send(data.socket, Tunnel.Protocol.encode({:ping}))
+      {:keep_state_and_data, [{:state_timeout, @heartbeat_interval, :heartbeat}]}
+    end
+  end
+
+  def registered(:info, {:tcp, sock, frame}, data) do
+    :ok = :inet.setopts(sock, active: :once)
+
+    case Tunnel.Protocol.decode(frame) do
+      {:open, token} ->
+        Task.Supervisor.start_child(data.proxies, fn -> Tunnel.Agent.Proxy.open(token, data) end)
+        {:keep_state, %{data | last_seen: mono()}}
+
+      {:pong} ->
+        Logger.info("heartbeat pong subdomain=#{data.subdomain}", subdomain: data.subdomain)
+        {:keep_state, %{data | last_seen: mono()}}
+
+      _ ->
+        :keep_state_and_data
+    end
+  end
+
+  def registered(:info, {:tcp_closed, _}, data) do
+    Logger.info("tunnel down subdomain=#{data.subdomain}", subdomain: data.subdomain)
+    {:next_state, :connecting, %{data | socket: nil}, [{:next_event, :internal, :connect}]}
+  end
+
+  def registered(:info, {:tcp_error, _, _}, data) do
+    {:next_state, :connecting, %{data | socket: nil}, [{:next_event, :internal, :connect}]}
+  end
+
+  defp relay_str(data), do: "#{data.relay_host}:#{data.control_port}"
+
+  defp mono, do: System.monotonic_time(:millisecond)
 end

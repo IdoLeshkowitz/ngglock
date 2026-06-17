@@ -1,4 +1,6 @@
 defmodule Tunnel.Relay do
+  require Logger
+
   @token_bytes 16
   @token_timeout 5_000
   @head_timeout 5_000
@@ -20,11 +22,13 @@ defmodule Tunnel.Relay do
 
     case Tunnel.Http.subdomain(head) do
       :error ->
+        Logger.debug("400 no parseable Host header")
         respond(socket, 400)
 
       {:ok, sub} ->
         case Tunnel.Relay.Routes.whereis(sub, routes) do
           nil ->
+            Logger.debug("404 no route for subdomain=#{sub}", subdomain: sub)
             respond(socket, 404)
 
           ctrl ->
@@ -46,6 +50,11 @@ defmodule Tunnel.Relay do
       {:ok, token} ->
         case Tunnel.Relay.Requests.take(requests, token, self()) do
           nil ->
+            Logger.warning(
+              "proxy connection with unknown/expired token token_id=#{token_id(token)}",
+              token_id: token_id(token)
+            )
+
             :gen_tcp.close(socket)
 
           {public, head} ->
@@ -56,7 +65,8 @@ defmodule Tunnel.Relay do
             :ok = Tunnel.Splice.splice(sp, public, socket)
         end
 
-      {:error, _} ->
+      {:error, reason} ->
+        Logger.warning("proxy token read error: #{inspect(reason)}", reason: inspect(reason))
         :gen_tcp.close(socket)
     end
   end
@@ -94,4 +104,6 @@ defmodule Tunnel.Relay do
 
     :gen_tcp.close(sock)
   end
+
+  defp token_id(token), do: Base.encode16(binary_part(token, 0, 4))
 end
