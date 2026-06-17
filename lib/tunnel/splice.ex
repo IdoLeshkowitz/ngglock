@@ -1,5 +1,6 @@
 defmodule Tunnel.Splice do
   use GenServer, restart: :temporary
+  require Logger
 
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, %{})
 
@@ -31,8 +32,14 @@ defmodule Tunnel.Splice do
     end
   end
 
+  @impl true
   def handle_info({:tcp_closed, _sock}, state), do: {:stop, :normal, state}
-  def handle_info({:tcp_error, _sock, _reason}, state), do: {:stop, :normal, state}
+
+  @impl true
+  def handle_info({:tcp_error, _sock, reason}, state) do
+    Logger.warning("splice tcp_error: #{inspect(reason)}", reason: inspect(reason))
+    {:stop, :normal, state}
+  end
 
   defp ready!(socket) do
     {:ok, [active: false]} = :inet.getopts(socket, [:active])

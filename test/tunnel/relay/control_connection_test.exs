@@ -1,6 +1,8 @@
 defmodule Tunnel.Relay.ControlConnectionTest do
   use ExUnit.Case, async: true
 
+  @control_packet Application.compile_env!(:tunnel, [Tunnel, :control_packet])
+
   setup do
     n = System.unique_integer([:positive])
     routes = :"routes_cc_#{n}"
@@ -8,10 +10,12 @@ defmodule Tunnel.Relay.ControlConnectionTest do
 
     {:ok, cc} = start_supervised({Tunnel.Relay.ControlConnection, routes: routes})
 
-    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, packet: 4])
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, packet: @control_packet])
     {:ok, port} = :inet.port(listen)
 
-    {:ok, client} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false, packet: 4])
+    {:ok, client} =
+      :gen_tcp.connect(~c"localhost", port, [:binary, active: false, packet: @control_packet])
+
     {:ok, server} = :gen_tcp.accept(listen)
 
     Tunnel.Relay.ControlConnection.attach(cc, server)
